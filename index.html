@@ -3,20 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <title>Crypto Screener Top 100</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f8f8f8; }
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
     h1 { text-align: center; }
     table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #fff; }
     th, td { padding: 8px; border: 1px solid #ccc; text-align: center; }
-    th { background: #eee; }
+    th { background: #eee; cursor: pointer; }
     button { margin: 10px; padding: 8px 16px; cursor: pointer; }
   </style>
 </head>
 <body>
-  <h1>Crypto Screener – Top 100</h1>
-  <button onclick="downloadExcel()">Download Excel</button>
+  <h1>Crypto Screener – Top 100 (с индикатори)</h1>
+  <button onclick="downloadExcel()">Свали Excel</button>
   <table id="crypto-table">
     <thead>
       <tr>
@@ -28,49 +27,162 @@
         <th>Цена за продажба</th>
         <th>Подкрепа</th>
         <th>Съпротива</th>
+        <th>RSI</th>
+        <th>MACD</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
 
-  <script>
-    async function loadData() {
-      const url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1";
-      const response = await fetch(url);
-      const data = await response.json();
+<script>
+async function fetchMarketData() {
+  const url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1";
+  const res = await fetch(url);
+  return res.json();
+}
 
-      const tbody = document.querySelector("#crypto-table tbody");
-      tbody.innerHTML = "";
+async function fetchHistory(id) {
+  const url = `https://api.coingecko.com/api/v3/coins/${id}/ohlc?vs_currency=usd&days=30`;
+  const res = await fetch(url);
+  return res.json(); // [time, open, high, low, close]
+}
 
-      // Примерен базов анализ (пълните индикатори могат да се добавят поетапно)
-      data.forEach(coin => {
-        const current = coin.current_price;
-        const change = (Math.random() * 20 - 5).toFixed(2); // TODO: тук ще сложим реалните изчисления от индикаторите
-        const expected = (current * (1 + change/100)).toFixed(4);
-        const support = (current * 0.95).toFixed(4);
-        const resistance = (current * 1.05).toFixed(4);
+// --- Технически индикатори ---
+function calcRSI(closes, period=14) {
+  let gains=0, losses=0;
+  for (let i=1;i<=period;i++) {
+    const diff = closes[i]-closes[i-1];
+    if (diff>=0) gains+=diff; else losses-=diff;
+  }
+  let avgGain=gains/period, avgLoss=losses/period;
+  for (let i=period+1;i<closes.length;i++) {
+    const diff=closes[i]-closes[i-1];
+    avgGain=(avgGain*(period-1)+(diff>0?diff:0))/period;
+    avgLoss=(avgLoss*(period-1)+(diff<0?-diff:0))/period;
+  }
+  const rs=avgLoss===0?100:avgGain/avgLoss;
+  return 100-(100/(1+rs));
+}
 
-        const row = `<tr>
-          <td>${coin.name} (${coin.symbol.toUpperCase()})</td>
-          <td>${current}</td>
-          <td>${change}%</td>
-          <td>${expected}</td>
-          <td>${(current*0.99).toFixed(4)}</td>
-          <td>${(current*1.02).toFixed(4)}</td>
-          <td>${support}</td>
-          <td>${resistance}</td>
-        </tr>`;
-        tbody.innerHTML += row;
+function calcEMA(values, period) {
+  const k=2/(period+1);
+  let ema=[values[0]];
+  for (let i=1;i<values.length;i++) {
+    ema.push(values[i]*k+ema[i-1]*(1-k));
+  }
+  return ema;
+}
+
+function calcMACD(closes) {
+  const ema12=calcEMA(closes,12);
+  const ema26=calcEMA(closes,26);
+  const macdLine=ema12.map((v,i)=>v-(ema26[i]||0));
+  const signal=calcEMA(macdLine.slice(26),9);
+  return macdLine[macdLine.length-1]-(signal[signal.length-1]||0);
+}
+
+function calcBollinger(closes, period=20) {
+  const slice=closes.slice(-period);
+  const mean=slice.reduce((a,b)=>a+b,0)/period;
+  const variance=slice.reduce((a,b)=>a+(b-mean)**2,0)/period;
+  const stdev=Math.sqrt(variance);
+  return {mid:mean, upper:mean+2*stdev, lower:mean-2*stdev};
+}
+
+function calcOBV(closes, volumes) {
+  let obv=0;
+  for (let i=1;i<closes.length;i++) {
+    if (closes[i]>closes[i-1]) obv+=volumes[i];
+    else if (closes[i]<closes[i-1]) obv-=volumes[i];
+  }
+  return obv;
+}
+
+function calcFib(high, low, current) {
+  const diff=high-low;
+  return {
+    support:(low+0.236*diff).toFixed(2),
+    resistance:(high-0.236*diff).toFixed(2)
+  }
+}
+
+// --- Главна логика ---
+async function loadData() {
+  const data=await fetchMarketData();
+  const tbody=document.querySelector("#crypto-table tbody");
+  tbody.innerHTML="";
+
+  let rows=[];
+
+  for (let coin of data) {
+    try {
+      const ohlc=await fetchHistory(coin.id);
+      if (!ohlc.length) continue;
+      const closes=ohlc.map(x=>x[4]);
+      const highs=ohlc.map(x=>x[2]);
+      const lows=ohlc.map(x=>x[3]);
+      const volumes=ohlc.map(x=>x[5]||1);
+
+      const rsi=calcRSI(closes);
+      const macd=calcMACD(closes);
+      const bb=calcBollinger(closes);
+      const obv=calcOBV(closes, volumes);
+      const fib=calcFib(Math.max(...highs), Math.min(...lows), coin.current_price);
+
+      // Алгоритъм за очаквана промяна (%)
+      let signal=0;
+      if (rsi<30) signal+=5;
+      if (rsi>70) signal-=5;
+      if (macd>0) signal+=3; else signal-=3;
+      if (coin.current_price<bb.lower) signal+=4;
+      if (coin.current_price>bb.upper) signal-=4;
+      if (obv>0) signal+=2;
+
+      const change=signal; // опростено
+      const expected=(coin.current_price*(1+change/100)).toFixed(4);
+
+      rows.push({
+        name:`${coin.name} (${coin.symbol.toUpperCase()})`,
+        current:coin.current_price,
+        change:change.toFixed(2),
+        expected:expected,
+        buy:(coin.current_price*0.99).toFixed(4),
+        sell:(coin.current_price*1.02).toFixed(4),
+        support:fib.support,
+        resistance:fib.resistance,
+        rsi:rsi.toFixed(2),
+        macd:macd.toFixed(2)
       });
-    }
+    } catch(e) {console.log("skip",coin.id);}
+  }
 
-    function downloadExcel() {
-      const table = document.getElementById("crypto-table");
-      const wb = XLSX.utils.table_to_book(table, {sheet: "Crypto Screener"});
-      XLSX.writeFile(wb, "crypto_screener.xlsx");
-    }
+  // сортиране
+  rows.sort((a,b)=>b.change-a.change);
 
-    loadData();
-  </script>
+  for (let r of rows) {
+    const row=`<tr>
+      <td>${r.name}</td>
+      <td>${r.current}</td>
+      <td>${r.change}%</td>
+      <td>${r.expected}</td>
+      <td>${r.buy}</td>
+      <td>${r.sell}</td>
+      <td>${r.support}</td>
+      <td>${r.resistance}</td>
+      <td>${r.rsi}</td>
+      <td>${r.macd}</td>
+    </tr>`;
+    tbody.innerHTML+=row;
+  }
+}
+
+function downloadExcel() {
+  const table=document.getElementById("crypto-table");
+  const wb=XLSX.utils.table_to_book(table,{sheet:"Crypto Screener"});
+  XLSX.writeFile(wb,"crypto_screener.xlsx");
+}
+
+loadData();
+</script>
 </body>
 </html>
