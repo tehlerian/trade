@@ -61,14 +61,67 @@
         const buy = (price * 0.99).toFixed(2);
         const sell = (price * 1.02).toFixed(2);
 
-        // Фалшиви сигнали за демо (зелено/червено)
-        const signals = [
-          { name: "RSI", val: change24h > 0 ? "green" : "red" },
-          { name: "MACD", val: momentum > 0 ? "green" : "red" },
-          { name: "BB", val: expectedChange > 0 ? "green" : "red" },
-          { name: "OBV", val: c.total_volume > 0 ? "green" : "red" },
-          { name: "Fib", val: expectedChange > 0 ? "green" : "red" }
-        ].map(s => `<span class="${s.val}">${s.name}</span>`).join(" / ");
+// Индикатори с по-реалистична логика
+let signalsArr = [];
+
+// RSI (приближение от 14 дни)
+if ((c.price_change_percentage_14d_in_currency || 0) > 10) {
+  signalsArr.push('<span class="green">RSI</span>');
+} else if ((c.price_change_percentage_14d_in_currency || 0) < -10) {
+  signalsArr.push('<span class="red">RSI</span>');
+} else {
+  signalsArr.push("RSI");
+}
+
+// MACD (7д > 14д > 30д = бичо)
+if (
+  (c.price_change_percentage_7d_in_currency || 0) >
+    (c.price_change_percentage_14d_in_currency || 0) &&
+  (c.price_change_percentage_14d_in_currency || 0) >
+    (c.price_change_percentage_30d_in_currency || 0)
+) {
+  signalsArr.push('<span class="green">MACD</span>');
+} else {
+  signalsArr.push('<span class="red">MACD</span>');
+}
+
+// Bollinger Bands (24h промяна > ±5%)
+if (change24h > 5) {
+  signalsArr.push('<span class="green">BB</span>');
+} else if (change24h < -5) {
+  signalsArr.push('<span class="red">BB</span>');
+} else {
+  signalsArr.push("BB");
+}
+
+// OBV (обем + посока на промяната)
+if (c.total_volume > 0) {
+  if (change24h > 0) {
+    signalsArr.push('<span class="green">OBV</span>');
+  } else {
+    signalsArr.push('<span class="red">OBV</span>');
+  }
+} else {
+  signalsArr.push("OBV");
+}
+
+// Fibonacci (позиция спрямо дневен диапазон)
+if (c.high_24h && c.low_24h && c.current_price) {
+  let range = c.high_24h - c.low_24h;
+  if (range > 0) {
+    let pos = (c.current_price - c.low_24h) / range;
+    if (pos > 0.8) {
+      signalsArr.push('<span class="green">Fib</span>');
+    } else if (pos < 0.2) {
+      signalsArr.push('<span class="red">Fib</span>');
+    } else {
+      signalsArr.push("Fib");
+    }
+  }
+}
+
+const signals = signalsArr.join(" / ");
+
 
         const row = `
           <tr>
